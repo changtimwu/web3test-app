@@ -2,8 +2,6 @@ import Web3 from 'web3';
 import * as W3T from 'web3/types';
 import BigNumber from 'bn.js'
 import { typedSignatureHash, recoverTypedSignature, TypedData } from 'eth-sig-util';
-
-declare const localStorage: any; // possibly missing
 export { BigNumber };
 
 // helper types
@@ -111,6 +109,10 @@ interface ChannelSettledArgs {
   _open_block_number: BigNumber;
 }
 
+class FundError extends Error {
+  current: BigNumber
+  required: BigNumber
+}
 /**
  * Async sleep: returns a promise which will resolve after timeout
  *
@@ -136,7 +138,7 @@ export function encodeHex(val: string | number | BigNumber, zPadLength?: number)
   if (typeof val === 'number' || val instanceof BigNumber) {
     val = val.toString(16);
   } else {
-    val = Array.from(<string>val).map((char: string) =>
+    val = Array.from(val as string).map((char: string) =>
       char.charCodeAt(0).toString(16).padStart(2, '0')
     ).join('');
   }
@@ -150,6 +152,7 @@ export function encodeHex(val: string | number | BigNumber, zPadLength?: number)
  * instance.
  */
 export class MicroRaiden {
+
   /**
    * Web3 instance
    */
@@ -193,11 +196,11 @@ export class MicroRaiden {
    * @param startBlock  Block in which channel manager was deployed
    */
   constructor(
-    provider: string | { currentProvider: any },
+    provider: string | { currentProvider: W3T.Provider },
     contractAddr: string,
-    contractABI: any[],
+    contractABI: W3T.Contract[],
     tokenAddr: string,
-    tokenABI: any[],
+    tokenABI: W3T.Contract[],
     startBlock?: number,
   ) {
     if (!provider) {
@@ -210,7 +213,9 @@ export class MicroRaiden {
     } else {
       throw new Error('Invalid web3 provider');
     }
-    this.contract = new this.web3.eth.Contract(contractABI, contractAddr,
+    this.contract = new this.web3.eth.Contract(
+      contractABI,
+      contractAddr,
       { from: this.web3.eth.defaultAccount }
     )
     this.token = new this.web3.eth.Contract(tokenABI, tokenAddr);
@@ -218,9 +223,7 @@ export class MicroRaiden {
     this.channel = { account: '', receiver: '', block: 0, proof: { balance: new BigNumber(0) } }
 
   }
-
   // utils
-
   /**
    * Convert number to BigNumber
    *
@@ -247,63 +250,6 @@ export class MicroRaiden {
   }
 
   /**
-   * Watch for a particular transaction hash to have given confirmations
-   *
-   * @param txHash  Transaction hash to wait for
-   * @param confirmations  Number of confirmations to wait after tx is mined
-   * @returns  Promise to mined receipt of transaction */
-  private async waitTx(txHash: string, confirmations?: number): Promise<W3T.TransactionReceipt> {
-    confirmations = confirmations || 0;
-    const blockStart = await this.web3.eth.getBlockNumber();
-
-    do {
-      const [receipt, block] = await Promise.all([
-        await this.web3.eth.getTransactionReceipt(txHash),
-        await this.web3.eth.getBlockNumber(),
-      ]);
-
-      if (!receipt || !receipt.blockNumber) {
-        console.log('Waiting tx..', block - blockStart);
-      } else if (block - receipt.blockNumber < confirmations) {
-        console.log('Waiting confirmations...', block - receipt.blockNumber);
-      } else {
-        return receipt;
-      }
-      await asyncSleep(2e3);
-    } while (true);
-  }
-
-  private getBalanceProofSignatureParams(proof: MicroProof): TypedData[] {
-    return [
-      {
-        type: 'string',
-        name: 'message_id',
-        value: 'Sender balance proof signature',
-      },
-      {
-        type: 'address',
-        name: 'receiver',
-        value: this.channel.receiver,
-      },
-      {
-        type: 'uint32',
-        name: 'block_created',
-        value: '' + this.channel.block,
-      },
-      {
-        type: 'uint192',
-        name: 'balance',
-        value: proof.balance.toString(),
-      },
-      {
-        type: 'address',
-        name: 'contract',
-        value: this.contract.options.address
-      },
-    ];
-  }
-
-  /**
    * Get contract's configured challenge's period
    *
    * As it calls the contract method, can be used for validating that
@@ -313,8 +259,9 @@ export class MicroRaiden {
    */
   async getChallengePeriod(): Promise<number> {
     this.challenge = await this.contract.methods.challenge_period().call()
-    if (!(this.challenge > 0))
+    if (!(this.challenge > 0)) {
       throw new Error('Invalid challenge');
+    }
     return this.challenge;
   }
 
@@ -342,8 +289,9 @@ export class MicroRaiden {
         return false;
       }
       channel.proof.balance = new BigNumber(channel.proof.balance);
-      if (channel.next_proof)
+      if (channel.next_proof) {
         channel.next_proof.balance = new BigNumber(channel.next_proof.balance);
+      }
       this.channel = channel;
       return true;
     } else {
@@ -379,26 +327,28 @@ export class MicroRaiden {
    * @returns  Promise to channel info, if a channel was found
    */
   async loadChannelFromBlockchain(account: string, receiver: string): Promise<MicroChannel> {
-    const openEvents = await
-      this.contract.getPastEvents('ChannelCreated',
-        {
-          filter: { _sender_address: account, _receiver_address: receiver, },
-          fromBlock: this.startBlock, toBlock: 'latest'
-        }
-      )
+    const openEvents = await this.contract.getPastEvents(
+      'ChannelCreated',
+      {
+        filter: { _sender_address: account, _receiver_address: receiver, },
+        fromBlock: this.startBlock, toBlock: 'latest'
+      }
+    )
 
     if (!openEvents || openEvents.length === 0) {
       throw new Error('No channel found for this account');
     }
     const minBlock = Math.min.apply(null, openEvents.map((ev) => ev.blockNumber)) as number;
     const [closeEvents, settleEvents, currentBlock, challenge] = await Promise.all([
-      this.contract.getPastEvents('ChannelCloseRequested',
+      this.contract.getPastEvents(
+        'ChannelCloseRequested',
         {
           filter: { _sender_address: account, _receiver_address: receiver },
           fromBlock: minBlock, toBlock: 'latest'
         }
       ) as Promise<W3T.EventLog[]>,
-      this.contract.getPastEvents('ChannelSettled',
+      this.contract.getPastEvents(
+        'ChannelSettled',
         {
           filter: { _sender_address: account, _receiver_address: receiver },
           fromBlock: minBlock, toBlock: 'latest'
@@ -409,16 +359,18 @@ export class MicroRaiden {
     ]);
 
     const stillOpen = openEvents.filter((ev) => {
-      for (let ev of settleEvents) {
-        let sev = ev.returnValues as ChannelCloseRequestedArgs
-        if (sev._open_block_number.eqn(ev.blockNumber))
+      for (let sev of settleEvents) {
+        let sevRet = sev.returnValues as ChannelCloseRequestedArgs
+        if (sevRet._open_block_number.eqn(ev.blockNumber)) {
           return false;
+        }
       }
-      for (let ev of closeEvents) {
-        let cev = ev.returnValues as ChannelSettledArgs
-        if (cev._open_block_number.eqn(ev.blockNumber) &&
-          ev.blockNumber + challenge > currentBlock)
+      for (let cev of closeEvents) {
+        let cevRet = cev.returnValues as ChannelSettledArgs
+        if (cevRet._open_block_number.eqn(ev.blockNumber) &&
+          ev.blockNumber + challenge > currentBlock) {
           return false;
+        }
       }
       return true;
     });
@@ -478,7 +430,6 @@ export class MicroRaiden {
     }
     return true;
   }
-
 
   /**
    * Get available accounts from web3 providers
@@ -608,21 +559,26 @@ export class MicroRaiden {
     if (cmTransfer) {
       // ERC223
       // transfer tokens directly to the channel manager contract
-      transferTxHash = await cmTransfer(this.contract.options.address,
+      transferTxHash = await cmTransfer(
+        this.contract.options.address,
         deposit,
         account + receiver.replace(/^0x/i, ''), // _data (3rd param) is sender (20B) + receiver (20B)
-        { gas: 100e3 }).send();
+        { gas: 100e3 }
+      ).send();
     } else {
       // ERC20
       // send 'approve' transaction to token contract
-      await this.token.methods.approve(this.contract.options.address,
+      await this.token.methods.approve(
+        this.contract.options.address,
         deposit,
-        { gas: 130e3 }).send();
+        { gas: 130e3 }
+      ).send();
       // send 'createChannel' transaction to channel manager contract
       transferTxHash = await this.contract.methods.createChannel(
         receiver,
         deposit,
-        { gas: 130e3 }).send();
+        { gas: 130e3 }
+      ).send();
     }
     console.log('transferTxHash', transferTxHash);
 
@@ -737,7 +693,6 @@ export class MicroRaiden {
       ));
     }
     console.log(`Closing channel. Cooperative = ${closingSig}`);
-
 
     let proof: MicroProof;
     if (closingSig && !this.channel.proof.sig) {
@@ -868,14 +823,14 @@ export class MicroRaiden {
       if (result.error)
         throw result.error;
       sig = result.result;*/
-      /*TODO: handle this in some other day. */
+      /* TODO: handle this in some other day. */
       this.web3.currentProvider.send(
         {
           jsonrpc: '2.0', id: 1,
           method: 'eth_signTypedData', params: [params, this.channel.account]
         },
         (err: Error, resp: W3T.JsonRPCResponse) => {
-          sig = resp.result //todo: promise this
+          sig = resp.result // todo: promise this
         }
       )
     } catch (err) {
@@ -887,7 +842,7 @@ export class MicroRaiden {
       // ask for signing of the hash
       sig = await this.signMessage(hash);
     }
-    //debug
+    // debug
     const recovered = recoverTypedSignature({ data: params, sig: sig });
     console.log('signTypedData =', sig, recovered);
     if (recovered !== this.channel.account) {
@@ -922,6 +877,7 @@ export class MicroRaiden {
    * @param amount  Amount to increment in current balance
    * @returns  Promise to signature
    */
+
   async incrementBalanceAndSign(amount: BigNumber): Promise<MicroProof> {
     if (!this.isChannelValid()) {
       throw new Error('No valid channelInfo');
@@ -932,9 +888,9 @@ export class MicroRaiden {
     if (info.state !== 'opened') {
       throw new Error('Tried signing on closed channel');
     } else if (proof.balance.gt(info.deposit)) {
-      var err = new Error(`Insuficient funds: current = ${info.deposit} , required = ${proof.balance}`);
-      (err as any)['current'] = info.deposit;
-      (err as any)['required'] = proof.balance;
+      var err = new FundError(`Insuficient funds: current = ${info.deposit} , required = ${proof.balance}`);
+      err.current = info.deposit
+      err.required = proof.balance
       throw err;
     }
     // get hash for new balance proof
@@ -1031,6 +987,64 @@ export class MicroRaiden {
     }).send();
     console.log('mintTxHash', txHash);
     return await this.waitTx(txHash, 1);
+  }
+
+  /**
+   * Watch for a particular transaction hash to have given confirmations
+   *
+   * @param txHash  Transaction hash to wait for
+   * @param confirmations  Number of confirmations to wait after tx is mined
+   * @returns  Promise to mined receipt of transaction
+   */
+  private async waitTx(txHash: string, confirmations?: number): Promise<W3T.TransactionReceipt> {
+    confirmations = confirmations || 0;
+    const blockStart = await this.web3.eth.getBlockNumber();
+
+    do {
+      const [receipt, block] = await Promise.all([
+        await this.web3.eth.getTransactionReceipt(txHash),
+        await this.web3.eth.getBlockNumber(),
+      ]);
+
+      if (!receipt || !receipt.blockNumber) {
+        console.log('Waiting tx..', block - blockStart);
+      } else if (block - receipt.blockNumber < confirmations) {
+        console.log('Waiting confirmations...', block - receipt.blockNumber);
+      } else {
+        return receipt;
+      }
+      await asyncSleep(2e3);
+    } while (true);
+  }
+
+  private getBalanceProofSignatureParams(proof: MicroProof): TypedData[] {
+    return [
+      {
+        type: 'string',
+        name: 'message_id',
+        value: 'Sender balance proof signature',
+      },
+      {
+        type: 'address',
+        name: 'receiver',
+        value: this.channel.receiver,
+      },
+      {
+        type: 'uint32',
+        name: 'block_created',
+        value: '' + this.channel.block,
+      },
+      {
+        type: 'uint192',
+        name: 'balance',
+        value: proof.balance.toString(),
+      },
+      {
+        type: 'address',
+        name: 'contract',
+        value: this.contract.options.address
+      },
+    ];
   }
 
 }
