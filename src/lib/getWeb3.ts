@@ -1,24 +1,14 @@
-// import store from '../../store'
 import Web3 from 'web3'
-export const WEB3_INITIALIZED = 'WEB3_INITIALIZED'
-
+import * as W3T from 'web3/types'
 export interface W3InitResult {
   web3Instance: Web3
 }
-
-/*
-function web3Initialized(results: W3InitResult) {
-  return {
-    type: WEB3_INITIALIZED,
-    payload: results
-  }
-}*/
 
 let Web3Prom = new Promise<W3InitResult>((resolve, reject) => {
   // Wait for loading completion to avoid race conditions with web3 injection timing.
   window.addEventListener('load', (dispatch) => {
     var results: W3InitResult
-    var win = window as { web3?: { currentProvider: any } }
+    var win = window as { web3?: { currentProvider: W3T.Provider } }
     // Checking if Web3 has been injected by the browser (Mist/MetaMask)
     if (win.web3) {
       // Use Mist/MetaMask's provider.
@@ -39,7 +29,6 @@ let Web3Prom = new Promise<W3InitResult>((resolve, reject) => {
       console.log('No web3 instance injected, using Local web3.')
       resolve(results)
     }
-    return results
   })
 })
 
