@@ -1,5 +1,5 @@
 {
-  "name": "my-app1",
+  "name": "web3test-app",
   "version": "0.1.0",
   "private": true,
   "dependencies": {
@@ -11,7 +11,7 @@
     "react": "^16.2.0",
     "react-dom": "^16.2.0",
     "react-scripts-ts": "2.13.0",
-    "web3": "/Users/timwu/packages/web3/custnpms/web3.js/packages/web3"
+    "web3": "/Users/timwu/Documents/web3/custnpms/web3.js/packages/web3"
   },
   "scripts": {
     "start": "react-scripts-ts start",
